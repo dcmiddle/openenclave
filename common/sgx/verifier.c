@@ -229,11 +229,17 @@ static oe_result_t _fill_with_known_claims(
     oe_result_t result = OE_UNEXPECTED;
     oe_report_t parsed_report = {0};
     oe_identity_t* id = &parsed_report.identity;
+    oe_parsed_tcb_info_t parsed_tcb_info = {0};
     const sgx_report_body_t* sgx_report_body = NULL;
+    sgx_quote_t* sgx_quote = NULL;
     size_t claims_index = 0;
     bool flag;
     oe_sgx_tcb_status_t tcb_status =
         oe_tcb_level_status_to_sgx_tcb_status(platform_tcb_level->status);
+    oe_tcb_info_tcb_level_t local_platform_tcb_level = *platform_tcb_level;
+    uint16_t pcesvn = 0;
+    uint8_t qeid[sizeof(sgx_quote->user_data)] = {0};
+    uint8_t fmspc[sizeof(parsed_tcb_info.fmspc)] = {0};
 
     if (claims_length < OE_REQUIRED_CLAIMS_COUNT + OE_SGX_REQUIRED_CLAIMS_COUNT)
         OE_RAISE(OE_INVALID_PARAMETER);
@@ -244,12 +250,21 @@ static oe_result_t _fill_with_known_claims(
         OE_CHECK(
             oe_parse_sgx_report_body(sgx_report_body, false, &parsed_report));
     }
-
     else
     {
         sgx_report_body = &((sgx_quote_t*)report_body)->report_body;
         OE_CHECK(
             oe_parse_sgx_report_body(sgx_report_body, true, &parsed_report));
+
+        sgx_quote = (sgx_quote_t*)report_body;
+        pcesvn = (uint16_t)&sgx_quote->pce_svn;
+        memcpy(qeid, &sgx_quote->user_data, sizeof(sgx_quote->user_data));
+        oe_parse_tcb_info_json(
+            sgx_endorsements->items[OE_SGX_ENDORSEMENT_FIELD_TCB_INFO].data,
+            sgx_endorsements->items[OE_SGX_ENDORSEMENT_FIELD_TCB_INFO].size,
+            &local_platform_tcb_level,
+            &parsed_tcb_info);
+        memcpy(fmspc, parsed_tcb_info.fmspc, sizeof(parsed_tcb_info.fmspc));
     }
 
     // Optional claims are needed for SGX quotes for remote attestation
@@ -392,6 +407,14 @@ static oe_result_t _fill_with_known_claims(
         sgx_report_body->isvfamilyid,
         sizeof(sgx_report_body->isvfamilyid)));
 
+    // SGX report CPUSVN
+    OE_CHECK(oe_sgx_add_claim(
+        &claims[claims_index++],
+        OE_CLAIM_SGX_CPUSVN,
+        sizeof(OE_CLAIM_SGX_CPUSVN),
+        sgx_report_body->cpusvn,
+        SGX_CPUSVN_SIZE));
+
     if (format_type != SGX_FORMAT_TYPE_LOCAL)
     {
         // TCB status.
@@ -425,6 +448,30 @@ static oe_result_t _fill_with_known_claims(
             sizeof(OE_CLAIM_VALIDITY_UNTIL),
             valid_until,
             sizeof(*valid_until)));
+
+        // SGX quote PCESVN
+        OE_CHECK(oe_sgx_add_claim(
+            &claims[claims_index++],
+            OE_CLAIM_PCESVN,
+            sizeof(OE_CLAIM_PCESVN),
+            &pcesvn,
+            sizeof(uint16_t)));
+
+        // quote QEID
+        OE_CHECK(oe_sgx_add_claim(
+            &claims[claims_index++],
+            OE_CLAIM_QEID,
+            sizeof(OE_CLAIM_QEID),
+            qeid,
+            sizeof(qeid)));
+
+        // TCB info FMSPC
+        OE_CHECK(oe_sgx_add_claim(
+            &claims[claims_index++],
+            OE_CLAIM_TCB_INFO_FMSPC,
+            sizeof(OE_CLAIM_TCB_INFO_FMSPC),
+            fmspc,
+            sizeof(fmspc)));
 
         // TCB info
         OE_CHECK(oe_sgx_add_claim(
